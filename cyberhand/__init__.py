@@ -26,15 +26,19 @@ def sind(deg: float) -> float: return np.sin(np.deg2rad(deg))
 
 @dataclass
 class Joint:
+    """
+    Класс, описывающий сочленение.
+    """
     number: int
     a: float
     d: float
     alpha: float
     theta: float
 
-    def transform_matrix(self):
+    def transform_matrix(self) -> np.ndarray[(4, 4), np.dtype[float]]:
         """
-        Возвращает матрицу преобразований конкретно для данного сочленения
+        Возвращает матрицу преобразований конкретно для данного сочленения, без учета преобразований предыдущих
+        сочленений
 
         :return:
         """
@@ -49,35 +53,104 @@ class Joint:
 
 
 class Manipulator:
+    """
+    Класс, описывающий состояние манипулятора в конкретный момент времени
+    """
+
     def __init__(self, timestamp: int, *theta_list: List[float]):
+        """
+
+        :param timestamp: Номер измерения
+        :param theta_list: Список углов theta для всех сочленений манипулятора
+        """
         self.timestamp = timestamp
 
         if len(theta_list) != MANIPULATOR_JOINTS_COUNT:
-            raise Exception("invalid data batch")
+            if len(theta_list) < MANIPULATOR_JOINTS_COUNT:
+                raise Exception("invalid data batch")
+            else:
+                theta_list = theta_list[:MANIPULATOR_JOINTS_COUNT]
 
         self.joints: List[Joint] = []
-
-        # матрица преобразований от n=0 до n=6
-        self.head_position_matrix = np.zeros((4, 4))
 
         for i, theta in enumerate(theta_list):
             joint = Joint(**JOINT_CONFIGURATION[i], theta=theta)
             self.joints.append(joint)
-            if i == 0:
-                self.head_position_matrix = joint.transform_matrix()
-            else:
-                self.head_position_matrix = np.matmul(self.head_position_matrix, joint.transform_matrix())
-
-        # декартовы координаты запястья
-        self.head_position_decart = self.head_position_matrix[[0, 1, 2], :][:, 3]
-        # TODO: углы Эйлера запястья
 
     def __repr__(self):
-        return ("timestamp: {} x: {} y: {} z: {}"
-                .format(self.timestamp, *self.head_position_decart))
+        return ("timestamp: {} \tx: {:3.4f} \ty: {:3.4f} \tz: {:3.4f} \tax: {:3.4f} \tay {:3.4f} \taz {:3.4f}"
+                .format(self.timestamp, *self.head_decart(), *self.head_euler()))
 
     def __str__(self):
         return self.__repr__()
+
+    def get_transform_matrix_by_joint_number(self, joint_number):
+        """
+        Матрица трансформаций относительно начала координат для сочленения №joint_number,
+        с учетом предыдущих трансформаций
+
+        :param joint_number: номер сочленения
+        :return:
+        """
+        self.joints.sort(key=lambda joint: joint.number)
+        transform_matrix = None
+        for joint in self.joints:
+            if transform_matrix is None:
+                transform_matrix = joint.transform_matrix()
+            transform_matrix = np.matmul(transform_matrix, joint.transform_matrix())
+            if joint.number == joint_number:
+                break
+
+        return transform_matrix
+
+    def get_decart_by_joint_number(self, joint_number):
+        """
+        Декартовы координаты сочленения №joint_number относительно начала координат
+
+        :param joint_number: номер сочленения
+        :return:
+        """
+        return self.get_transform_matrix_by_joint_number(joint_number)[[0, 1, 2], :][:, 3]
+
+    def get_euler_by_joint_number(self, joint_number):
+        """
+        Эйлеровы углы поворота сочленения №joint_number относительно начала координат
+
+        :param joint_number: номер сочленения
+        :return:
+        """
+        m = self.get_transform_matrix_by_joint_number(joint_number)
+        if m[0, 2] < 1.:
+            if m[0, 2] > -1.:
+                ay = np.arcsin(m[0, 2])
+                ax = np.arctan2(-m[1, 2], m[2, 2])
+                az = np.arctan2(-m[0, 1], m[0, 0])
+            else:  # m[0, 2] == -1.
+                ay = -np.pi / 2
+                ax = -np.arctan2(m[1, 0], m[1, 1])
+                az = 0.
+        else:  # m[0, 2] == 1.
+            ay = np.pi / 2
+            ax = np.arctan2(m[1, 0], m[1, 1])
+            az = 0.
+
+        return np.rad2deg(ax), np.rad2deg(ay), np.rad2deg(az)
+
+    def head_decart(self):
+        """
+        Декартовы координаты кисти манипулятора относительно начала координат
+
+        :return:
+        """
+        return self.get_transform_matrix_by_joint_number(len(self.joints) - 1)[[0, 1, 2], :][:, 3]
+
+    def head_euler(self):
+        """
+        Эйлеровы углы поворота кисти относительно начала координат
+
+        :return:
+        """
+        return self.get_euler_by_joint_number(len(self.joints) - 1)
 
     def get_all_joint_positions_for_pretty_plot(self):
         """
